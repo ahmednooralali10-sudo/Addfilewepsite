@@ -1,5 +1,6 @@
 from flask import Flask, request, render_template_string
-import requests
+from vercel_blob import put
+import urllib.parse
 
 app = Flask(__name__)
 
@@ -8,7 +9,6 @@ SECRET_ACCESS_CODE = "XOREYT123400028"
 
 # مفاتيح reCAPTCHA
 RECAPTCHA_SITE_KEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
-RECAPTCHA_SECRET_KEY = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe"
 
 HTML_LAYOUT = """
 <!DOCTYPE html>
@@ -32,62 +32,42 @@ HTML_LAYOUT = """
 </html>
 """
 
-def verify_recaptcha(response_token):
-    if not response_token:
-        return False
-    data = {
-        'secret': RECAPTCHA_SECRET_KEY,
-        'response': response_token
-    }
-    try:
-        r = requests.post('https://www.google.com/recaptcha/api/siteverify', data=data, timeout=5)
-        return r.json().get('success', False)
-    except Exception:
-        return False
-
 @app.route('/', methods=['GET', 'POST'])
 def home():
     error_msg = ""
     if request.method == 'POST':
         user_code = request.form.get('access_code')
-        recaptcha_response = request.form.get('g-recaptcha-response')
         custom_name = request.form.get('file_name')
         uploaded_file = request.files.get('file')
 
         if user_code != SECRET_ACCESS_CODE:
             error_msg = "❌ رمز الحماية غير صحيح! غير مصرح لك برفع الملفات."
-        elif not verify_recaptcha(recaptcha_response):
-            error_msg = "⚠️ يرجى تأكيد أنك لست برنامج روبوت!"
         elif uploaded_file and custom_name:
             try:
-                files = {'fileToUpload': (uploaded_file.filename, uploaded_file.stream, uploaded_file.content_type)}
-                data = {'reqtype': 'fileupload'}
-                response = requests.post('https://catbox.moe/user/api.php', data=data, files=files, timeout=15)
-
-                if response.status_code == 200:
-                    direct_url = response.text.strip()
-                    share_link = request.host_url + f"download?name={requests.utils.quote(custom_name)}&url={requests.utils.quote(direct_url)}"
-                    
-                    content = f"""
-                    <div class="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl border border-emerald-500/30">✓</div>
-                    <h1 class="text-2xl font-bold text-white mb-2">تم رفع الملف بنجاح!</h1>
-                    <p class="text-sm text-slate-400 mb-6">اسم الملف: <span class="text-indigo-300 font-semibold">{custom_name}</span></p>
-                    
-                    <div class="bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60 mb-4">
-                        <input type="text" value="{share_link}" readonly id="linkInput" class="w-full bg-transparent text-xs text-center text-indigo-200 outline-none select-all">
-                    </div>
-                    
-                    <button onclick="navigator.clipboard.writeText('{share_link}'); alert('تم نسخ الرابط بنجاح!');" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/30 mb-3">
-                        📋 نسخ الرابط للمشاركة
-                    </button>
-                    
-                    <a href="/" class="block text-xs text-slate-400 hover:text-white transition-colors">رفع ملف آخر</a>
-                    """
-                    return render_template_string(HTML_LAYOUT, content=content, title="تم الرفع بنجاح")
-                else:
-                    error_msg = "حدث خطأ أثناء رفع الملف، حاول مرة أخرى."
-            except Exception:
-                error_msg = "فشل الاتصال بسيرفر التخزين."
+                # رفع الملف مباشرة إلى Vercel Blob Storage
+                blob = put(uploaded_file.filename, uploaded_file.read(), access='public')
+                direct_url = blob['url']
+                
+                share_link = request.host_url + f"download?name={urllib.parse.quote(custom_name)}&url={urllib.parse.quote(direct_url)}"
+                
+                content = f"""
+                <div class="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto mb-4 text-3xl border border-emerald-500/30">✓</div>
+                <h1 class="text-2xl font-bold text-white mb-2">تم رفع الملف بنجاح!</h1>
+                <p class="text-sm text-slate-400 mb-6">اسم الملف: <span class="text-indigo-300 font-semibold">{custom_name}</span></p>
+                
+                <div class="bg-slate-900/60 p-3 rounded-2xl border border-slate-700/60 mb-4">
+                    <input type="text" value="{share_link}" readonly id="linkInput" class="w-full bg-transparent text-xs text-center text-indigo-200 outline-none select-all">
+                </div>
+                
+                <button onclick="navigator.clipboard.writeText('{share_link}'); alert('تم نسخ الرابط بنجاح!');" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/30 mb-3">
+                    📋 نسخ الرابط للمشاركة
+                </button>
+                
+                <a href="/" class="block text-xs text-slate-400 hover:text-white transition-colors">رفع ملف آخر</a>
+                """
+                return render_template_string(HTML_LAYOUT, content=content, title="تم الرفع بنجاح")
+            except Exception as e:
+                error_msg = "حدث خطأ أثناء الرفع، تأكد من تفعيل Vercel Blob في لوحة التحكم."
 
     error_html = f'<div class="p-3 mb-4 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl">{error_msg}</div>' if error_msg else ''
 
