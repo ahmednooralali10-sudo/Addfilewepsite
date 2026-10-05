@@ -1,8 +1,3 @@
-# ============================================================
-# XORE FILE HOST
-# Short File Links • Upload • Download • Stats
-# ============================================================
-
 from flask import Flask, request, render_template_string, redirect
 import requests
 import secrets
@@ -13,1016 +8,1103 @@ import re
 import time
 import html
 from urllib.parse import quote
-
+# ============================================================
+# XORE LINK HOST
+# ============================================================
 app = Flask(__name__)
-
 # ============================================================
 # SETTINGS
 # ============================================================
-
 SECRET_ACCESS_CODE = "XOREYT123400028"
-
-RECAPTCHA_SITE_KEY = "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI"
-RECAPTCHA_SECRET_KEY = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe"
-
+# ضع مفاتيح reCAPTCHA الخاصة بك هنا
+RECAPTCHA_SITE_KEY = "YOUR_RECAPTCHA_SITE_KEY"
+RECAPTCHA_SECRET_KEY = "YOUR_RECAPTCHA_SECRET_KEY"
 MAX_FILE_SIZE = 50 * 1024 * 1024
-
-DATA_FILE = "/tmp/xore_files.json"
-
+DATA_FILE = "/tmp/xore_links.json"
 # ============================================================
-# DATA
+# DATABASE
 # ============================================================
-
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {}
-
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
-
-
-def save_data(data):
+def save_data():
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+            json.dump(
+                LINKS,
+                f,
+                ensure_ascii=False,
+                indent=2
+            )
     except Exception:
         pass
-
-
-FILES = load_data()
-
-
+LINKS = load_data()
 # ============================================================
 # HELPERS
 # ============================================================
-
 def generate_code(length=7):
     chars = string.ascii_letters + string.digits
-
     while True:
-        code = "".join(secrets.choice(chars) for _ in range(length))
-
-        if code not in FILES:
+        code = "".join(
+            secrets.choice(chars)
+            for _ in range(length)
+        )
+        if code not in LINKS:
             return code
-
-
-def clean_filename(filename):
-    filename = os.path.basename(filename or "").strip()
-
-    # إزالة الأحرف الخطرة
-    filename = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "", filename)
-
-    # منع المسافات الزائدة
-    filename = re.sub(r"\s+", " ", filename)
-
-    if not filename:
-        filename = "file"
-
-    # الحد الأقصى
-    filename = filename[:100]
-
-    return filename
-
-
-def safe_filename_for_url(filename):
-    filename = clean_filename(filename)
-
-    # نخلي الرابط أجمل
-    filename = filename.replace(" ", "-")
-
-    return quote(filename, safe="-_.~")
-
-
+def clean_name(name):
+    name = os.path.basename(
+        name or ""
+    ).strip()
+    name = re.sub(
+        r'[<>:"/\\|?*\x00-\x1F]',
+        "",
+        name
+    )
+    name = re.sub(
+        r"\s+",
+        " ",
+        name
+    )
+    if not name:
+        name = "XORE"
+    return name[:100]
+def url_name(name):
+    name = clean_name(name)
+    name = name.replace(
+        " ",
+        "-"
+    )
+    return quote(
+        name,
+        safe="-_.~"
+    )
+def short_url(code, name):
+    return (
+        request.host_url.rstrip("/")
+        + "/l/"
+        + code
+        + "/"
+        + url_name(name)
+    )
 def verify_recaptcha(token):
+    # إذا لم يتم وضع مفاتيح حقيقية
+    # نتجاوز التحقق أثناء التطوير.
+    if (
+        not RECAPTCHA_SECRET_KEY
+        or
+        RECAPTCHA_SECRET_KEY.startswith(
+            "YOUR_"
+        )
+    ):
+        return True
     if not token:
         return False
-
     try:
-        response = requests.post(
+        r = requests.post(
             "https://www.google.com/recaptcha/api/siteverify",
             data={
-                "secret": RECAPTCHA_SECRET_KEY,
-                "response": token
+                "secret":
+                    RECAPTCHA_SECRET_KEY,
+                "response":
+                    token
             },
             timeout=8
         )
-
-        return response.json().get("success", False)
-
+        return r.json().get(
+            "success",
+            False
+        )
     except Exception:
         return False
-
-
-def upload_to_storage(uploaded_file):
-
+def valid_target(url):
+    url = url.strip()
+    allowed = (
+        url.startswith("https://")
+        or
+        url.startswith("http://")
+        or
+        url.startswith("itms-services://")
+    )
+    return allowed
+def upload_file(file):
     files = {
         "file": (
-            uploaded_file.filename,
-            uploaded_file.stream,
-            uploaded_file.content_type or "application/octet-stream"
+            file.filename,
+            file.stream,
+            file.content_type
+            or
+            "application/octet-stream"
         )
     }
-
-    response = requests.post(
+    r = requests.post(
         "https://tmpfiles.org/api/v1/upload",
         files=files,
         timeout=30
     )
-
-    if response.status_code != 200:
-        raise Exception("Storage upload failed")
-
-    data = response.json()
-
-    if not data.get("data"):
-        raise Exception("Invalid storage response")
-
-    raw_url = data["data"].get("url")
-
+    if r.status_code != 200:
+        raise Exception(
+            "Upload failed"
+        )
+    data = r.json()
+    raw_url = (
+        data
+        .get("data", {})
+        .get("url")
+    )
     if not raw_url:
-        raise Exception("Storage URL missing")
-
-    # تحويله لرابط تحميل مباشر
-    direct_url = raw_url.replace(
+        raise Exception(
+            "No URL returned"
+        )
+    return raw_url.replace(
         "tmpfiles.org/",
         "tmpfiles.org/dl/"
     )
-
-    return direct_url
-
-
-def get_file(code):
-    return FILES.get(code)
-
-
-def build_file_url(code, filename):
-    host = request.host_url.rstrip("/")
-
-    return f"{host}/f/{code}/{safe_filename_for_url(filename)}"
-
-
 # ============================================================
-# HTML
+# DESIGN
 # ============================================================
-
-HTML_LAYOUT = """
+LAYOUT = """
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
-
 <head>
-
 <meta charset="UTF-8">
-
 <meta name="viewport"
       content="width=device-width, initial-scale=1.0">
-
 <title>{{ title }}</title>
-
 <script src="https://cdn.tailwindcss.com"></script>
-
-<script src="https://www.google.com/recaptcha/api.js"
-        async defer></script>
-
+{% if recaptcha %}
+<script
+src="https://www.google.com/recaptcha/api.js"
+async
+defer>
+</script>
+{% endif %}
 <link rel="preconnect"
       href="https://fonts.googleapis.com">
-
 <link rel="preconnect"
       href="https://fonts.gstatic.com"
       crossorigin>
-
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap"
-      rel="stylesheet">
-
+<link
+href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap"
+rel="stylesheet">
 <style>
-
 * {
     box-sizing: border-box;
 }
-
 body {
-    font-family: 'Cairo', sans-serif;
+    font-family: Cairo, sans-serif;
 }
-
 .glass {
-    background: rgba(15, 23, 42, .82);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background:
+        rgba(15,23,42,.76);
+    backdrop-filter:
+        blur(22px);
+    -webkit-backdrop-filter:
+        blur(22px);
 }
-
 .glow {
     box-shadow:
-        0 0 40px rgba(99, 102, 241, .12),
-        0 20px 70px rgba(0, 0, 0, .35);
+        0 20px 80px
+        rgba(0,0,0,.35);
 }
-
-input[type=file]::file-selector-button {
-    cursor: pointer;
+.input {
+    width: 100%;
+    background:
+        rgba(2,6,23,.72);
+    border:
+        1px solid
+        rgba(100,116,139,.35);
+    border-radius:
+        17px;
+    padding:
+        14px 16px;
+    color:
+        white;
+    outline:
+        none;
+    transition:
+        .2s;
 }
-
+.input:focus {
+    border-color:
+        rgb(99,102,241);
+    box-shadow:
+        0 0 0 3px
+        rgba(99,102,241,.10);
+}
+.card {
+    border:
+        1px solid
+        rgba(100,116,139,.22);
+    background:
+        rgba(2,6,23,.45);
+}
 </style>
-
 </head>
-
-<body class="min-h-screen
-             bg-gradient-to-br
-             from-slate-950
-             via-indigo-950
-             to-slate-950
-             text-white">
-
-<div class="min-h-screen flex items-center justify-center p-4">
-
-<div class="w-full max-w-lg">
-
+<body
+class="
+min-h-screen
+bg-slate-950
+text-white
+overflow-x-hidden
+">
+<div
+class="
+fixed
+inset-0
+pointer-events-none
+overflow-hidden
+">
+<div
+class="
+absolute
+w-96
+h-96
+bg-indigo-600/10
+rounded-full
+blur-3xl
+-top-32
+-right-32
+">
+</div>
+<div
+class="
+absolute
+w-96
+h-96
+bg-purple-600/10
+rounded-full
+blur-3xl
+-bottom-32
+-left-32
+">
+</div>
+</div>
+<div
+class="
+relative
+min-h-screen
+flex
+items-center
+justify-center
+p-4
+">
+<div
+class="
+w-full
+max-w-xl
+">
 {{ content | safe }}
-
 </div>
-
 </div>
-
 </body>
 </html>
 """
-
-
 # ============================================================
 # HOME
 # ============================================================
-
-@app.route("/", methods=["GET", "POST"])
+@app.route(
+    "/",
+    methods=["GET", "POST"]
+)
 def home():
-
-    error_msg = ""
-
+    error = ""
     if request.method == "POST":
-
-        access_code = request.form.get(
+        access = request.form.get(
             "access_code",
             ""
         ).strip()
-
-        custom_name = clean_filename(
-            request.form.get(
-                "file_name",
-                ""
+        if access != SECRET_ACCESS_CODE:
+            error = "رمز الحماية غير صحيح."
+        else:
+            # ================================================
+            # FILE UPLOAD
+            # ================================================
+            if request.form.get(
+                "action"
+            ) == "file":
+                uploaded = request.files.get(
+                    "file"
+                )
+                name = clean_name(
+                    request.form.get(
+                        "file_name",
+                        ""
+                    )
+                )
+                captcha = request.form.get(
+                    "g-recaptcha-response"
+                )
+                if not uploaded:
+                    error = "اختر ملفاً."
+                elif not verify_recaptcha(
+                    captcha
+                ):
+                    error = (
+                        "يرجى إكمال التحقق."
+                    )
+                else:
+                    try:
+                        uploaded.stream.seek(
+                            0,
+                            os.SEEK_END
+                        )
+                        size = (
+                            uploaded.stream.tell()
+                        )
+                        uploaded.stream.seek(0)
+                        if size > MAX_FILE_SIZE:
+                            error = (
+                                "الملف أكبر من 50MB."
+                            )
+                        else:
+                            file_url = upload_file(
+                                uploaded
+                            )
+                            code = generate_code()
+                            LINKS[code] = {
+                                "name":
+                                    name,
+                                "url":
+                                    file_url,
+                                "type":
+                                    "file",
+                                "size":
+                                    size,
+                                "created":
+                                    int(
+                                        time.time()
+                                    ),
+                                "views":
+                                    0
+                            }
+                            save_data()
+                            link = short_url(
+                                code,
+                                name
+                            )
+                            return success_page(
+                                link,
+                                name,
+                                "تم رفع الملف"
+                            )
+                    except Exception:
+                        error = (
+                            "تعذر رفع الملف."
+                        )
+            # ================================================
+            # SHORT LINK
+            # ================================================
+            elif request.form.get(
+                "action"
+            ) == "link":
+                name = clean_name(
+                    request.form.get(
+                        "link_name",
+                        ""
+                    )
+                )
+                target = request.form.get(
+                    "target_url",
+                    ""
+                ).strip()
+                if not valid_target(
+                    target
+                ):
+                    error = (
+                        "الرابط غير مدعوم. "
+                        "استخدم http أو https "
+                        "أو itms-services."
+                    )
+                else:
+                    code = generate_code()
+                    LINKS[code] = {
+                        "name":
+                            name,
+                        "url":
+                            target,
+                        "type":
+                            "link",
+                        "size":
+                            0,
+                        "created":
+                            int(
+                                time.time()
+                            ),
+                        "views":
+                            0
+                    }
+                    save_data()
+                    link = short_url(
+                        code,
+                        name
+                    )
+                    return success_page(
+                        link,
+                        name,
+                        "تم إنشاء الرابط"
+                    )
+    # ========================================================
+    # ERROR
+    # ========================================================
+    error_box = ""
+    if error:
+        error_box = f"""
+        <div
+        class="
+        mb-5
+        p-4
+        rounded-2xl
+        bg-red-500/10
+        border
+        border-red-500/20
+        text-red-300
+        text-sm
+        ">
+            ❌ {html.escape(error)}
+        </div>
+        """
+    # ========================================================
+    # HOME UI
+    # ========================================================
+    content = f"""
+    <div
+    class="
+    glass
+    glow
+    rounded-[30px]
+    border
+    border-slate-700/50
+    p-6
+    sm:p-8
+    "
+    >
+        <div
+        class="
+        w-20
+        h-20
+        mx-auto
+        mb-5
+        rounded-3xl
+        bg-gradient-to-br
+        from-indigo-500/20
+        to-purple-500/10
+        border
+        border-indigo-500/20
+        flex
+        items-center
+        justify-center
+        text-4xl
+        "
+        >
+            🔗
+        </div>
+        <div class="text-center">
+            <h1
+            class="
+            text-3xl
+            font-black
+            "
+            >
+                XORE LINK
+            </h1>
+            <p
+            class="
+            text-slate-400
+            text-sm
+            mt-2
+            mb-7
+            "
+            >
+                مركز رفع الملفات وإنشاء الروابط القصيرة
+            </p>
+        </div>
+        {error_box}
+        <!-- =============================================
+             CREATE SHORT LINK
+        ============================================== -->
+        <div
+        class="
+        card
+        rounded-3xl
+        p-5
+        mb-5
+        "
+        >
+            <div class="flex items-center gap-3 mb-5">
+                <div
+                class="
+                w-11
+                h-11
+                rounded-2xl
+                bg-indigo-500/10
+                flex
+                items-center
+                justify-center
+                text-xl
+                "
+                >
+                    🔗
+                </div>
+                <div>
+                    <h2
+                    class="
+                    font-bold
+                    "
+                    >
+                        إنشاء رابط قصير
+                    </h2>
+                    <p
+                    class="
+                    text-xs
+                    text-slate-500
+                    "
+                    >
+                        يدعم روابط itms-services
+                    </p>
+                </div>
+            </div>
+            <form
+            method="POST"
+            class="space-y-4"
+            >
+                <input
+                    type="hidden"
+                    name="action"
+                    value="link"
+                >
+                <input
+                    class="input"
+                    type="password"
+                    name="access_code"
+                    placeholder="🔐 رمز الحماية"
+                    required
+                >
+                <input
+                    class="input"
+                    type="text"
+                    name="link_name"
+                    placeholder="🏷️ اسم الرابط — مثال: XORE"
+                    maxlength="100"
+                    required
+                >
+                <textarea
+                    class="input"
+                    name="target_url"
+                    rows="4"
+                    dir="ltr"
+                    placeholder="itms-services://?action=download-manifest&url=https://example.com/manifest.plist"
+                    required
+                ></textarea>
+                <button
+                type="submit"
+                class="
+                w-full
+                py-4
+                rounded-2xl
+                bg-indigo-600
+                hover:bg-indigo-500
+                font-bold
+                transition
+                shadow-lg
+                shadow-indigo-600/20
+                "
+                >
+                    ⚡ إنشاء الرابط القصير
+                </button>
+            </form>
+        </div>
+        <!-- =============================================
+             FILE UPLOAD
+        ============================================== -->
+        <div
+        class="
+        card
+        rounded-3xl
+        p-5
+        "
+        >
+            <div class="flex items-center gap-3 mb-5">
+                <div
+                class="
+                w-11
+                h-11
+                rounded-2xl
+                bg-emerald-500/10
+                flex
+                items-center
+                justify-center
+                text-xl
+                "
+                >
+                    📁
+                </div>
+                <div>
+                    <h2 class="font-bold">
+                        رفع ملف
+                    </h2>
+                    <p class="text-xs text-slate-500">
+                        الحد الأقصى 50MB
+                    </p>
+                </div>
+            </div>
+            <form
+            method="POST"
+            enctype="multipart/form-data"
+            class="space-y-4"
+            >
+                <input
+                    type="hidden"
+                    name="action"
+                    value="file"
+                >
+                <input
+                    class="input"
+                    type="password"
+                    name="access_code"
+                    placeholder="🔐 رمز الحماية"
+                    required
+                >
+                <input
+                    class="input"
+                    type="text"
+                    name="file_name"
+                    placeholder="🏷️ اسم الملف"
+                    maxlength="100"
+                    required
+                >
+                <input
+                    class="
+                    w-full
+                    rounded-2xl
+                    bg-slate-950/70
+                    border
+                    border-slate-700
+                    p-3
+                    text-sm
+                    text-slate-400
+                    "
+                    type="file"
+                    name="file"
+                    required
+                >
+                """
+    if not RECAPTCHA_SITE_KEY.startswith(
+        "YOUR_"
+    ):
+        content += f"""
+                <div
+                class="
+                flex
+                justify-center
+                overflow-hidden
+                "
+                >
+                    <div
+                    class="g-recaptcha"
+                    data-sitekey="{RECAPTCHA_SITE_KEY}"
+                    data-theme="dark"
+                    >
+                    </div>
+                </div>
+                """
+    content += """
+                <button
+                type="submit"
+                class="
+                w-full
+                py-4
+                rounded-2xl
+                bg-emerald-600
+                hover:bg-emerald-500
+                font-bold
+                transition
+                shadow-lg
+                shadow-emerald-600/20
+                "
+                >
+                    🚀 رفع وإنشاء الرابط
+                </button>
+            </form>
+        </div>
+        <!-- FOOTER -->
+        <div
+        class="
+        text-center
+        text-[11px]
+        text-slate-600
+        mt-6
+        "
+        >
+            🔒 XORE LINK HOST
+        </div>
+    </div>
+    """
+    return render_template_string(
+        LAYOUT,
+        content=content,
+        title="XORE LINK",
+        recaptcha=(
+            not RECAPTCHA_SITE_KEY.startswith(
+                "YOUR_"
             )
         )
-
-        uploaded_file = request.files.get("file")
-
-        captcha = request.form.get(
-            "g-recaptcha-response"
-        )
-
-        # -----------------------------
-        # Security
-        # -----------------------------
-
-        if access_code != SECRET_ACCESS_CODE:
-
-            error_msg = "رمز الحماية غير صحيح."
-
-        elif not verify_recaptcha(captcha):
-
-            error_msg = "يرجى تأكيد أنك لست روبوتاً."
-
-        elif not uploaded_file:
-
-            error_msg = "اختر ملفاً أولاً."
-
-        elif not uploaded_file.filename:
-
-            error_msg = "اسم الملف غير صالح."
-
-        else:
-
-            try:
-
-                # -----------------------------
-                # Size check
-                # -----------------------------
-
-                uploaded_file.stream.seek(0, os.SEEK_END)
-
-                file_size = uploaded_file.stream.tell()
-
-                uploaded_file.stream.seek(0)
-
-                if file_size > MAX_FILE_SIZE:
-
-                    error_msg = (
-                        "حجم الملف أكبر من الحد المسموح "
-                        "(50MB)."
-                    )
-
-                else:
-
-                    # -----------------------------
-                    # Upload
-                    # -----------------------------
-
-                    direct_url = upload_to_storage(
-                        uploaded_file
-                    )
-
-                    # -----------------------------
-                    # Short ID
-                    # -----------------------------
-
-                    code = generate_code(7)
-
-                    # -----------------------------
-                    # Save metadata
-                    # -----------------------------
-
-                    FILES[code] = {
-
-                        "name": custom_name,
-
-                        "url": direct_url,
-
-                        "size": file_size,
-
-                        "created": int(time.time()),
-
-                        "downloads": 0
-
-                    }
-
-                    save_data(FILES)
-
-                    # -----------------------------
-                    # Short link
-                    # -----------------------------
-
-                    share_link = build_file_url(
-                        code,
-                        custom_name
-                    )
-
-                    escaped_link = html.escape(
-                        share_link,
-                        quote=True
-                    )
-
-                    content = f"""
-
-                    <div class="glass glow
-                                rounded-3xl
-                                border border-emerald-500/20
-                                p-7">
-
-                        <div class="w-20 h-20
-                                    mx-auto mb-5
-                                    rounded-3xl
-                                    bg-emerald-500/10
-                                    border border-emerald-500/20
-                                    flex items-center justify-center
-                                    text-4xl">
-
-                            ✓
-
-                        </div>
-
-                        <h1 class="text-2xl font-extrabold mb-2">
-                            تم رفع الملف 🎉
-                        </h1>
-
-                        <p class="text-slate-400 text-sm mb-6">
-                            رابط المشاركة جاهز
-                        </p>
-
-
-                        <div class="rounded-2xl
-                                    bg-slate-950/70
-                                    border border-slate-700
-                                    p-4
-                                    mb-4">
-
-                            <div class="text-xs
-                                        text-slate-500
-                                        mb-2">
-
-                                اسم الملف
-
-                            </div>
-
-                            <div class="font-bold
-                                        text-indigo-300
-                                        break-all">
-
-                                {html.escape(custom_name)}
-
-                            </div>
-
-                        </div>
-
-
-                        <div class="rounded-2xl
-                                    bg-slate-950/70
-                                    border border-indigo-500/20
-                                    p-3
-                                    mb-4">
-
-                            <input
-
-                                id="linkInput"
-
-                                value="{escaped_link}"
-
-                                readonly
-
-                                class="w-full
-                                       bg-transparent
-                                       text-indigo-200
-                                       text-sm
-                                       text-center
-                                       outline-none">
-
-                        </div>
-
-
-                        <button
-
-                            onclick="copyLink()"
-
-                            class="w-full
-                                   bg-indigo-600
-                                   hover:bg-indigo-500
-                                   py-4
-                                   rounded-2xl
-                                   font-bold
-                                   transition">
-
-                            📋 نسخ الرابط
-
-                        </button>
-
-
-                        <a
-
-                            href="{escaped_link}"
-
-                            target="_blank"
-
-                            class="block
-                                   text-center
-                                   mt-3
-                                   py-3
-                                   rounded-2xl
-                                   bg-slate-800
-                                   hover:bg-slate-700
-                                   transition
-                                   text-sm">
-
-                            🔗 فتح الرابط
-
-                        </a>
-
-
-                        <a
-
-                            href="/"
-
-                            class="block
-                                   text-center
-                                   mt-5
-                                   text-xs
-                                   text-slate-500
-                                   hover:text-white">
-
-                            رفع ملف آخر
-
-                        </a>
-
-                    </div>
-
-
-                    <script>
-
-                    function copyLink() {{
-
-                        const input =
-                            document.getElementById("linkInput");
-
-                        navigator.clipboard.writeText(
-                            input.value
-                        );
-
-                        alert("تم نسخ الرابط ✓");
-
-                    }}
-
-                    </script>
-
-                    """
-
-                    return render_template_string(
-                        HTML_LAYOUT,
-                        content=content,
-                        title="تم الرفع"
-                    )
-
-            except Exception:
-
-                error_msg = (
-                    "حدث خطأ أثناء رفع الملف، "
-                    "حاول مرة أخرى."
-                )
-
-    # ========================================================
-    # Error
-    # ========================================================
-
-    error_html = ""
-
-    if error_msg:
-
-        error_html = f"""
-
-        <div class="mb-5
-                    p-4
-                    rounded-2xl
-                    bg-red-500/10
-                    border border-red-500/20
-                    text-red-300
-                    text-sm">
-
-            ❌ {html.escape(error_msg)}
-
-        </div>
-
-        """
-
-    # ========================================================
-    # Upload page
-    # ========================================================
-
-    content = f"""
-
-    <div class="glass glow
-                rounded-3xl
-                border border-slate-700/60
-                p-7">
-
-        <div class="w-20 h-20
-                    mx-auto mb-5
-                    rounded-3xl
-                    bg-indigo-500/10
-                    border border-indigo-500/20
-                    flex items-center justify-center
-                    text-4xl">
-
-            📁
-
-        </div>
-
-
-        <h1 class="text-2xl
-                   font-extrabold
-                   mb-2">
-
-            XORE File Host
-
-        </h1>
-
-
-        <p class="text-slate-400
-                  text-sm
-                  mb-7">
-
-            ارفع ملفك واحصل على رابط مشاركة قصير
-
-        </p>
-
-
-        {error_html}
-
-
-        <form
-
-            method="POST"
-
-            enctype="multipart/form-data"
-
-            class="space-y-5">
-
-
-            <div class="text-right">
-
-                <label class="block
-                              text-xs
-                              font-bold
-                              text-slate-300
-                              mb-2">
-
-                    🔐 رمز الدخول
-
-                </label>
-
-                <input
-
-                    type="password"
-
-                    name="access_code"
-
-                    required
-
-                    placeholder="أدخل رمز الحماية"
-
-                    class="w-full
-                           rounded-2xl
-                           bg-slate-950/70
-                           border border-slate-700
-                           px-4 py-3.5
-                           outline-none
-                           focus:border-indigo-500
-                           transition">
-
-            </div>
-
-
-            <div class="text-right">
-
-                <label class="block
-                              text-xs
-                              font-bold
-                              text-slate-300
-                              mb-2">
-
-                    🏷️ اسم الملف في الرابط
-
-                </label>
-
-                <input
-
-                    type="text"
-
-                    name="file_name"
-
-                    required
-
-                    placeholder="مثال: MyScript.lua"
-
-                    class="w-full
-                           rounded-2xl
-                           bg-slate-950/70
-                           border border-slate-700
-                           px-4 py-3.5
-                           outline-none
-                           focus:border-indigo-500
-                           transition">
-
-                <p class="text-[11px]
-                          text-slate-500
-                          mt-2">
-
-                    سيظهر الاسم في نهاية الرابط.
-
-                </p>
-
-            </div>
-
-
-            <div class="text-right">
-
-                <label class="block
-                              text-xs
-                              font-bold
-                              text-slate-300
-                              mb-2">
-
-                    📤 اختر الملف
-
-                </label>
-
-                <input
-
-                    type="file"
-
-                    name="file"
-
-                    required
-
-                    class="w-full
-                           rounded-2xl
-                           bg-slate-950/70
-                           border border-slate-700
-                           p-2
-                           text-xs
-                           text-slate-400">
-
-            </div>
-
-
-            <div class="flex justify-center
-                        overflow-hidden
-                        rounded-xl">
-
-                <div
-
-                    class="g-recaptcha"
-
-                    data-sitekey="{RECAPTCHA_SITE_KEY}"
-
-                    data-theme="dark">
-
-                </div>
-
-            </div>
-
-
-            <button
-
-                type="submit"
-
-                class="w-full
-                       bg-indigo-600
-                       hover:bg-indigo-500
-                       py-4
-                       rounded-2xl
-                       font-bold
-                       transition
-                       shadow-lg
-                       shadow-indigo-600/20">
-
-                🚀 رفع وإنشاء رابط قصير
-
-            </button>
-
-        </form>
-
-
-        <div class="mt-6
-                    pt-5
-                    border-t
-                    border-slate-800
-                    text-[11px]
-                    text-slate-500">
-
-            🔒 الحد الأقصى للملف: 50MB
-
-        </div>
-
-    </div>
-
-    """
-
-    return render_template_string(
-        HTML_LAYOUT,
-        content=content,
-        title="XORE File Host"
     )
-
-
 # ============================================================
-# SHORT FILE LINK
+# SUCCESS
 # ============================================================
-
-@app.route("/f/<code>/<path:filename>")
-def file_page(code, filename):
-
-    item = get_file(code)
-
+def success_page(
+    link,
+    name,
+    title
+):
+    safe_link = html.escape(
+        link,
+        quote=True
+    )
+    content = f"""
+    <div
+    class="
+    glass
+    glow
+    rounded-[30px]
+    border
+    border-emerald-500/20
+    p-7
+    text-center
+    "
+    >
+        <div
+        class="
+        w-24
+        h-24
+        mx-auto
+        mb-6
+        rounded-[30px]
+        bg-emerald-500/10
+        border
+        border-emerald-500/20
+        flex
+        items-center
+        justify-center
+        text-5xl
+        "
+        >
+            ✓
+        </div>
+        <div
+        class="
+        text-emerald-400
+        text-sm
+        font-bold
+        mb-2
+        "
+        >
+            تم بنجاح
+        </div>
+        <h1
+        class="
+        text-2xl
+        font-black
+        mb-2
+        "
+        >
+            {html.escape(title)}
+        </h1>
+        <p
+        class="
+        text-slate-400
+        text-sm
+        mb-7
+        break-all
+        "
+        >
+            {html.escape(name)}
+        </p>
+        <div
+        class="
+        rounded-2xl
+        bg-slate-950/80
+        border
+        border-indigo-500/20
+        p-4
+        mb-4
+        "
+        >
+            <div
+            class="
+            text-[10px]
+            text-slate-500
+            mb-2
+            "
+            >
+                رابط المشاركة
+            </div>
+            <input
+            id="shortLink"
+            value="{safe_link}"
+            readonly
+            class="
+            w-full
+            bg-transparent
+            text-indigo-300
+            text-sm
+            text-center
+            outline-none
+            "
+            >
+        </div>
+        <button
+        onclick="copyLink()"
+        class="
+        w-full
+        py-4
+        rounded-2xl
+        bg-indigo-600
+        hover:bg-indigo-500
+        font-bold
+        transition
+        "
+        >
+            📋 نسخ الرابط
+        </button>
+        <a
+        href="{safe_link}"
+        target="_blank"
+        class="
+        block
+        mt-3
+        py-3
+        rounded-2xl
+        bg-slate-800
+        hover:bg-slate-700
+        text-sm
+        "
+        >
+            🔗 فتح الرابط
+        </a>
+        <a
+        href="/"
+        class="
+        block
+        mt-6
+        text-xs
+        text-slate-500
+        hover:text-white
+        "
+        >
+            ← إنشاء رابط جديد
+        </a>
+    </div>
+    <script>
+    function copyLink() {{
+        const input =
+            document.getElementById(
+                "shortLink"
+            );
+        navigator.clipboard.writeText(
+            input.value
+        );
+        alert(
+            "تم نسخ الرابط ✓"
+        );
+    }}
+    </script>
+    """
+    return render_template_string(
+        LAYOUT,
+        content=content,
+        title=title,
+        recaptcha=False
+    )
+# ============================================================
+# SHORT LINK
+# ============================================================
+@app.route(
+    "/l/<code>/<path:name>"
+)
+def open_link(
+    code,
+    name
+):
+    item = LINKS.get(code)
     if not item:
-
         content = """
-
-        <div class="glass
-                    rounded-3xl
-                    border border-red-500/20
-                    p-8
-                    text-center">
-
+        <div
+        class="
+        glass
+        rounded-3xl
+        p-8
+        text-center
+        border
+        border-red-500/20
+        "
+        >
             <div class="text-5xl mb-5">
                 🔍
             </div>
-
             <h1 class="text-2xl font-bold mb-2">
-                الملف غير موجود
+                الرابط غير موجود
             </h1>
-
             <p class="text-slate-400 text-sm">
-                الرابط غير صالح أو انتهت صلاحيته.
+                الرابط غير صالح أو غير موجود.
             </p>
-
-            <a href="/"
-               class="block mt-6
-                      bg-indigo-600
-                      rounded-2xl
-                      py-3
-                      font-bold">
-
-                العودة للرئيسية
-
+            <a
+            href="/"
+            class="
+            block
+            mt-6
+            bg-indigo-600
+            rounded-2xl
+            py-3
+            font-bold
+            "
+            >
+                الرئيسية
             </a>
-
         </div>
-
         """
-
         return render_template_string(
-            HTML_LAYOUT,
+            LAYOUT,
             content=content,
-            title="الملف غير موجود"
+            title="الرابط غير موجود",
+            recaptcha=False
         ), 404
-
-
-    name = item["name"]
-
-    size_mb = item["size"] / 1024 / 1024
-
-    downloads = item.get(
-        "downloads",
-        0
+    # زيادة المشاهدات
+    item["views"] = (
+        item.get(
+            "views",
+            0
+        ) + 1
     )
-
-    content = f"""
-
-    <div class="glass glow
-                rounded-3xl
-                border border-indigo-500/20
-                p-7">
-
-        <div class="w-24 h-24
-                    mx-auto mb-6
-                    rounded-3xl
-                    bg-indigo-500/10
-                    border border-indigo-500/20
-                    flex items-center justify-center
-                    text-5xl">
-
-            📄
-
-        </div>
-
-
-        <div class="text-xs
-                    text-indigo-400
-                    font-bold
-                    mb-2">
-
-            FILE
-
-        </div>
-
-
-        <h1 class="text-2xl
-                   font-extrabold
-                   break-all
-                   mb-3">
-
-            {html.escape(name)}
-
-        </h1>
-
-
-        <p class="text-slate-400
-                  text-sm
-                  mb-7">
-
-            الملف جاهز للتحميل
-
-        </p>
-
-
-        <div class="grid grid-cols-2 gap-3 mb-6">
-
-            <div class="rounded-2xl
-                        bg-slate-950/60
-                        border border-slate-800
-                        p-4">
-
-                <div class="text-xs
-                            text-slate-500">
-
-                    الحجم
-
-                </div>
-
-                <div class="font-bold mt-1">
-
-                    {size_mb:.2f} MB
-
-                </div>
-
-            </div>
-
-
-            <div class="rounded-2xl
-                        bg-slate-950/60
-                        border border-slate-800
-                        p-4">
-
-                <div class="text-xs
-                            text-slate-500">
-
-                    التحميلات
-
-                </div>
-
-                <div class="font-bold mt-1">
-
-                    {downloads}
-
-                </div>
-
-            </div>
-
-        </div>
-
-
-        <a
-
-            href="/download/{code}"
-
-            class="w-full
-                   bg-emerald-600
-                   hover:bg-emerald-500
-                   py-4
-                   rounded-2xl
-                   font-bold
-                   flex items-center
-                   justify-center
-                   transition">
-
-            ⬇️ تحميل الملف
-
-        </a>
-
-
-        <div class="mt-6
-                    text-[11px]
-                    text-slate-500">
-
-            🔒 رابط مشاركة قصير
-
-        </div>
-
-    </div>
-
-    """
-
-    return render_template_string(
-        HTML_LAYOUT,
-        content=content,
-        title=name
-    )
-
-
-# ============================================================
-# REAL DOWNLOAD
-# ============================================================
-
-@app.route("/download/<code>")
-def real_download(code):
-
-    item = get_file(code)
-
-    if not item:
-        return "File not found", 404
-
-    # زيادة عدد التحميلات
-    item["downloads"] = item.get(
-        "downloads",
-        0
-    ) + 1
-
-    save_data(FILES)
-
+    save_data()
+    # تحويل مباشر
     return redirect(
         item["url"],
         code=302
     )
-
-
 # ============================================================
-# HEALTH CHECK
+# STATS
 # ============================================================
-
+@app.route("/stats")
+def stats():
+    total = len(LINKS)
+    files = sum(
+        1
+        for x in LINKS.values()
+        if x.get("type") == "file"
+    )
+    links = sum(
+        1
+        for x in LINKS.values()
+        if x.get("type") == "link"
+    )
+    views = sum(
+        x.get("views", 0)
+        for x in LINKS.values()
+    )
+    content = f"""
+    <div
+    class="
+    glass
+    glow
+    rounded-[30px]
+    border
+    border-slate-700/50
+    p-7
+    "
+    >
+        <div class="text-center mb-7">
+            <div class="text-4xl mb-3">
+                📊
+            </div>
+            <h1 class="text-2xl font-black">
+                إحصائيات XORE
+            </h1>
+        </div>
+        <div
+        class="
+        grid
+        grid-cols-2
+        gap-3
+        "
+        >
+            <div class="card rounded-2xl p-5">
+                <div class="text-xs text-slate-500">
+                    جميع الروابط
+                </div>
+                <div class="text-2xl font-black mt-2">
+                    {total}
+                </div>
+            </div>
+            <div class="card rounded-2xl p-5">
+                <div class="text-xs text-slate-500">
+                    الملفات
+                </div>
+                <div class="text-2xl font-black mt-2">
+                    {files}
+                </div>
+            </div>
+            <div class="card rounded-2xl p-5">
+                <div class="text-xs text-slate-500">
+                    الروابط
+                </div>
+                <div class="text-2xl font-black mt-2">
+                    {links}
+                </div>
+            </div>
+            <div class="card rounded-2xl p-5">
+                <div class="text-xs text-slate-500">
+                    الزيارات
+                </div>
+                <div class="text-2xl font-black mt-2">
+                    {views}
+                </div>
+            </div>
+        </div>
+        <a
+        href="/"
+        class="
+        block
+        mt-6
+        text-center
+        py-3
+        rounded-2xl
+        bg-slate-800
+        hover:bg-slate-700
+        text-sm
+        "
+        >
+            ← الرئيسية
+        </a>
+    </div>
+    """
+    return render_template_string(
+        LAYOUT,
+        content=content,
+        title="الإحصائيات",
+        recaptcha=False
+    )
+# ============================================================
+# HEALTH
+# ============================================================
 @app.route("/health")
 def health():
-
     return {
-
         "status": "ok",
-
-        "service": "XORE File Host",
-
-        "files": len(FILES)
-
+        "service":
+            "XORE LINK",
+        "links":
+            len(LINKS)
     }
-
-
 # ============================================================
-# RUN
+# START
 # ============================================================
-
 if __name__ == "__main__":
-
     app.run(
         host="0.0.0.0",
         port=int(
